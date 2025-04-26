@@ -23,6 +23,8 @@ public:
 
     symbol_info *lookup(symbol_info *symbol);
 
+    symbol_info *lookup_in_current_scope(symbol_info *symbol);
+
     void print_current_scope();
 
     void print_all_scopes();
@@ -79,6 +81,13 @@ symbol_info *symbol_table::lookup(symbol_info *symbol) {
         temp = temp->get_parent_scope();
     }
     return NULL;
+}
+
+symbol_info *symbol_table::lookup_in_current_scope(symbol_info *symbol) {
+    if (current_scope == NULL) {
+        return NULL;
+    }
+    return current_scope->lookup_in_scope(symbol);
 }
 
 void symbol_table::print_current_scope() {

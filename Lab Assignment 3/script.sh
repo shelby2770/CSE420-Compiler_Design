@@ -12,5 +12,5 @@ echo 'Generated the scanner object file'
 g++ y.o l.o
 echo 'All ready, running'
 ./a.exe input.c
-echo 'logfile'
-cat my_log.txt
+# echo "logfile"
+# cat 23341065_log.txt

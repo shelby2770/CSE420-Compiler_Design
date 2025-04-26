@@ -11,15 +11,17 @@ int yylex(void);
 extern FILE *yyin;
 extern YYSTYPE yylval;
 
-ofstream outlog;
+ofstream outlog, errorlog;
 
-int lines=1;
-
+int lines=1, error_cnt=0;
+bool found_void=false;
 // Symbol table related variables
 symbol_table st(10, &outlog);
 vector<symbol_info *> params;
 int param_count = 0;
 
+string current_function_name;
+vector<string> error;
 // declare any other variables or functions needed here
 
 void yyerror(char *s)
@@ -75,12 +77,27 @@ unit : var_declaration
 	;
 
 func_definition : type_specifier ID LPAREN parameter_list RPAREN 
-	{
+	{	
+		//check duplicate function declaration
+		symbol_info *temp = new symbol_info($2->getname(), "Function Definition");
+		if (st.lookup(temp) != NULL) {
+			errorlog << "At line no: " << lines << " Multiple declaration of function " << $2->getname() << endl<<endl;
+			error_cnt++;
+		}
+		delete temp;
+
 		$2->set_symbol_type("Function Definition");
 		$2->set_return_type($1->getname());
 
+		for (auto &err:error){
+			errorlog<< err<<$2->getname()<<endl<<endl;
+			error_cnt++;
+		}
+		error.clear();
+
 		stringstream ss($4->getname());
 		string token;
+
 		while (getline(ss, token, ',')) {
         	$2->add_param_type(token);
     	}
@@ -95,6 +112,14 @@ func_definition : type_specifier ID LPAREN parameter_list RPAREN
 	}
 	| type_specifier ID LPAREN RPAREN
 	{
+		//check duplicate function declaration
+		symbol_info *temp = new symbol_info($2->getname(), "Function Definition");
+		if (st.lookup(temp) != NULL) {
+			errorlog << "At line no: " << lines << " Multiple declaration of function " << $2->getname() << endl<<endl;
+			error_cnt++;
+		}
+		delete temp;
+
 		$2->set_symbol_type("Function Definition");
 		$2->set_return_type($1->getname());
 		st.insert($2);
@@ -113,6 +138,15 @@ parameter_list : parameter_list COMMA type_specifier ID
 		outlog<<"At line no: "<<lines<<" parameter_list : parameter_list COMMA type_specifier ID "<<endl<<endl;
 		outlog<<$1->getname()<<","<<$3->getname()<<" "<<$4->getname()<<endl<<endl;
 		$$ = new symbol_info($1->getname()+","+$3->getname()+" "+$4->getname(),"parameter_list");
+
+		//check duplicate parameter names
+		for (auto param : params) {
+			if (param->getname() == $4->getname()) {
+				string err_msg = "At line no: " + to_string(lines) + " Multiple declaration of variable " + $4->getname() 
+						+ " in parameter of ";
+				error.push_back(err_msg);
+			}
+		}
 
 		$4->set_symbol_type("Variable");
 		$4->set_return_type($3->getname());
@@ -179,6 +213,12 @@ var_declaration : type_specifier declaration_list SEMICOLON
 		outlog<<$1->getname()<<" "<<$2->getname()<<";\n"<<endl;
 		$$ = new symbol_info($1->getname()+" "+$2->getname()+";\n","var_declaration");
 
+		//void type checking
+		if ($1->getname() == "void") {
+			errorlog << "At line no: " << lines << " variable type can not be void" << endl << endl;
+			error_cnt++;
+		}
+
 		stringstream ss_var($2->getname());
 		string token_var;
 		while (getline(ss_var, token_var, ',')) {
@@ -197,6 +237,15 @@ var_declaration : type_specifier declaration_list SEMICOLON
 				func->set_symbol_type("Variable");
 				func->set_return_type($1->getname());
 			}
+
+			//duplicate variable declaration (current scope check only)
+			symbol_info *temp = new symbol_info(func->getname(), func->get_symbol_type());
+			symbol_info *found = st.lookup_in_current_scope(temp);
+			if (found != NULL) {
+				errorlog << "At line no: " << lines << " Multiple declaration of variable " << func->getname() << endl << endl;
+				error_cnt++;
+			}
+			delete temp;
 
 			st.insert(func);
     	}
@@ -311,6 +360,13 @@ statement : var_declaration
 		outlog<<"At line no: "<<lines<<" statement : PRINTLN LPAREN ID RPAREN SEMICOLON "<<endl<<endl;
 		outlog<<"printf("<<$3->getname()<<");\n"<<endl;
 		$$ = new symbol_info("printf("+$3->getname()+");\n","statement");
+
+		//check if variable is declared
+		symbol_info *var = st.lookup($3);
+		if (var == NULL) {
+			errorlog << "At line no: " << lines << " Undeclared variable " << $3->getname() << endl << endl;
+			error_cnt++;
+		}
 	}
 	| RETURN expression SEMICOLON
 	{
@@ -328,6 +384,7 @@ expression_statement : SEMICOLON
 	}
 	| expression SEMICOLON
 	{
+		found_void= false;
 		outlog<<"At line no: "<<lines<<" expression_statement : expression SEMICOLON "<<endl<<endl;
 		outlog<<$1->getname()<<";\n"<<endl;
 		$$ = new symbol_info($1->getname()+";\n","expression_statement");
@@ -345,6 +402,26 @@ variable : ID
 		outlog<<"At line no: "<<lines<<" variable : ID LTHIRD expression RTHIRD "<<endl<<endl;
 		outlog<<$1->getname()<<"["<<$3->getname()<<"]"<<endl<<endl;
 		$$ = new symbol_info($1->getname()+"["+$3->getname()+"]","variable");
+
+		//check if base variable is declared
+		symbol_info *base_var = st.lookup($1);
+		if (base_var == NULL) {
+			errorlog << "At line no: " << lines << " Undeclared variable " << $1->getname() << endl << endl;
+			error_cnt++;
+		}
+		//check if it's actually an array
+		else if (base_var->get_symbol_type() != "Array") {
+			errorlog << "At line no: " << lines << " variable is not of array type : " << $1->getname() << endl << endl;
+			error_cnt++;
+		}
+		//check if index is integer
+		else {
+			symbol_info *index = st.lookup($3);
+			if (index != NULL && index->get_return_type() != "int") {
+				errorlog << "At line no: " << lines << " array index is not of integer type : " << $1->getname() << endl << endl;
+				error_cnt++;
+			}
+		}
 	}
 	;
 
@@ -359,6 +436,46 @@ expression : logic_expression
 		outlog<<"At line no: "<<lines<<" expression : variable ASSIGNOP logic_expression "<<endl<<endl;
 		outlog<<$1->getname()<<"="<<$3->getname()<<endl<<endl;
 		$$ = new symbol_info($1->getname()+"="+$3->getname(), "expression");
+
+		//check if base variable is declared  (int a[100]; here base variable is a)
+		string base_var_name = $1->getname();
+		size_t bracket_pos = base_var_name.find('[');
+		if (bracket_pos != string::npos) {
+			base_var_name = base_var_name.substr(0, bracket_pos);
+		}
+		symbol_info *base_var = st.lookup(new symbol_info(base_var_name, "ID"));
+		if (base_var == NULL) {
+			errorlog << "At line no: " << lines << " Undeclared variable " << base_var_name << endl << endl;
+			error_cnt++;
+		}
+		//check if variable is an array
+		else if (base_var->get_symbol_type() == "Array" && bracket_pos == string::npos) {
+			errorlog << "At line no: " << lines << " variable is of array type : " << base_var_name << endl << endl;
+			error_cnt++;
+		}
+		//check if array index is integer
+		else if (bracket_pos != string::npos) {
+			string index_expr = $1->getname().substr(bracket_pos + 1);
+			index_expr = index_expr.substr(0, index_expr.find(']'));
+			if (index_expr.find('.') != string::npos) {
+				errorlog << "At line no: " << lines << " array index is not of integer type : " << base_var_name << endl << endl;
+				error_cnt++;
+			}
+			//check if float is assigned to integer array element
+			else if (base_var->get_return_type() == "int" && $3->getname().find('.') != string::npos && $3->getname().find('%') == string::npos) {
+				errorlog << "At line no: " << lines << " Warning: Assignment of float value into variable of integer type" << endl << endl;
+				error_cnt++;
+			}
+		}
+		//check if float is assigned to integer
+		else if (base_var->get_return_type() == "int" && $3->getname().find('.') != string::npos && $3->getname().find('%') == string::npos) {
+			errorlog << "At line no: " << lines << " Warning: Assignment of float value into variable of integer type" << endl << endl;
+			error_cnt++;
+		}
+		if (found_void) {
+			error_cnt++;
+			errorlog << "At line no: " << lines << " operation on void type" << endl << endl;
+		}
 	}
 	;
 
@@ -415,6 +532,21 @@ term : unary_expression
 		outlog<<"At line no: "<<lines<<" term : term MULOP unary_expression "<<endl<<endl;
 		outlog<<$1->getname()<<$2->getname()<<$3->getname()<<endl<<endl;
 		$$ = new symbol_info($1->getname()+$2->getname()+$3->getname(), "term");
+
+		//check for division or modulus by zero
+		if ($2->getname() == "/" || $2->getname() == "%") {
+			if ($3->getname() == "0") {
+				errorlog << "At line no: " << lines << " Modulus by 0" << endl << endl;
+				error_cnt++;
+			}
+		}
+		//check for modulus on non-integer type
+		if ($2->getname() == "%") {
+			if ($3->getname().find('.') != string::npos) {
+				errorlog << "At line no: " << lines << " Modulus operator on non integer type" << endl << endl;
+				error_cnt++;
+			}
+		}
 	}
 	;
 
@@ -449,6 +581,94 @@ factor : variable
 		outlog<<"At line no: "<<lines<<" factor : ID LPAREN argument_list RPAREN "<<endl<<endl;
 		outlog<<$1->getname()<<"("<<$3->getname()<<")"<<endl<<endl;
 		$$ = new symbol_info($1->getname()+"("+$3->getname()+")","factor");
+
+		bool skip = false;
+		//check function call argument types
+		symbol_info *func = st.lookup($1);
+		if (func==NULL){
+			errorlog << "At line no: " << lines << " Undeclared function " << $1->getname() << endl << endl;
+			error_cnt++;
+			skip = true;
+		}
+		if (!skip && func != NULL && func->get_symbol_type() == "Function Definition") {
+			//check if void type function is assigned
+			if (func->get_return_type() == "void") {
+				found_void=true;
+				//errorlog << "At line no: " << lines << " operation on void type" << endl << endl;
+				//error_cnt++;
+				//skip = true;
+			}
+
+			if (!skip) {
+				vector<string> param_types = func->get_param_types();
+				stringstream ss_args($3->getname());
+				string arg;
+				int arg_count = 0;
+
+				while (getline(ss_args, arg, ',')) {
+					if (arg_count < param_types.size()) {
+						//check if argument is a variable/array
+						symbol_info *arg_symbol = new symbol_info(arg, "ID");
+						symbol_info *found_arg = st.lookup(arg_symbol);
+						delete arg_symbol;
+
+						if (found_arg != NULL) {
+							//check if argument is an array
+							if (found_arg->get_symbol_type() == "Array") {
+								errorlog << "At line no: " << lines << " variable is of array type : " << found_arg->getname() << endl << endl;
+								error_cnt++;
+							}
+							//argument is variable/array; type checking
+							else {
+								string param_type = param_types[arg_count];
+								size_t space_pos = param_type.find(' ');
+								if (space_pos != string::npos) {
+									param_type = param_type.substr(0, space_pos);
+								}
+
+								if (found_arg->get_return_type() != param_type) {
+									errorlog << "At line no: " << lines << " argument " << (arg_count + 1) 
+											<< " type mismatch in function call: " << $1->getname() << endl << endl;
+									error_cnt++;
+								}
+							}
+						} else {
+							//argument is constant, checking if float or int
+							string param_type = param_types[arg_count];
+							size_t space_pos = param_type.find(' ');
+							if (space_pos != string::npos) {
+								param_type = param_type.substr(0, space_pos);
+							}
+
+							if (arg.find('.') != string::npos) {
+								//constant float
+								if (param_type != "float") {
+									errorlog << "At line no: " << lines << " argument " << (arg_count + 1) 
+											<< " type mismatch in function call: " << $1->getname() << endl << endl;
+									error_cnt++;
+								}
+							} else {
+								//constant int
+								if (param_type != "int") {
+									errorlog<<param_type<<endl<<lines<<endl;
+									errorlog << "At line no: " << lines << " argument " << (arg_count + 1) 
+											<< " type mismatch in function call: " << $1->getname() << endl << endl;
+									error_cnt++;
+								}
+							}
+						}
+					}
+					arg_count++;
+				}
+
+				//check if number of arguments matches
+				if (arg_count != param_types.size()) {
+					errorlog << "At line no: " << lines << " Inconsistencies in number of arguments in function call: " 
+							<< $1->getname() << endl << endl;
+					error_cnt++;
+				}
+			}
+		}
 	}
 	| LPAREN expression RPAREN
 	{
@@ -473,12 +693,26 @@ factor : variable
 		outlog<<"At line no: "<<lines<<" factor : variable INCOP "<<endl<<endl;
 		outlog<<$1->getname()<<"++"<<endl<<endl;
 		$$ = new symbol_info($1->getname()+"++","factor");
+
+		//check if variable is an array
+		symbol_info *var = st.lookup($1);
+		if (var != NULL && var->get_symbol_type() == "Array") {
+			errorlog << "At line no: " << lines << " variable is of array type : " << $1->getname() << endl << endl;
+			error_cnt++;
+		}
 	}
 	| variable DECOP
 	{
 		outlog<<"At line no: "<<lines<<" factor : variable DECOP "<<endl<<endl;
 		outlog<<$1->getname()<<"--"<<endl<<endl;
 		$$ = new symbol_info($1->getname()+"--","factor");
+
+		//check if variable is an array
+		symbol_info *var = st.lookup($1);
+		if (var != NULL && var->get_symbol_type() == "Array") {
+			errorlog << "At line no: " << lines << " variable is of array type : " << $1->getname() << endl << endl;
+			error_cnt++;
+		}
 	}
 	;
 
@@ -520,7 +754,8 @@ int main(int argc, char *argv[])
 		return 0;
 	}
 	yyin = fopen(argv[1], "r");
-	outlog.open("my_log.txt", ios::trunc);
+	outlog.open("23341065_log.txt", ios::trunc);
+	errorlog.open("23341065_error.txt", ios::trunc);
 	st.enter_scope();
 	
 	if(yyin == NULL)
@@ -533,9 +768,9 @@ int main(int argc, char *argv[])
 	
 	//print number of lines
 	outlog << endl << "Total lines: " << lines << endl;
-	
+	errorlog<<endl<<"Total errors: "<<error_cnt<<endl;
 	outlog.close();
-	
+	errorlog.close();
 	fclose(yyin);
 	
 	return 0;
